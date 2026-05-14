@@ -119,24 +119,29 @@ function SystemStatus({ aiConfig }) {
   );
 }
 
-function LiveOfficialNote({ observation }) {
-  if (!observation) return null;
+function LiveOfficialNote({ observation, summary }) {
+  if (!observation && !summary) return null;
+  const status = summary?.status || observation?.status || "normal";
+  const severity = summary?.max_severity !== undefined ? Math.round(summary.max_severity * 100) : null;
   return (
     <View style={styles.liveOfficialNote}>
-      <Text style={styles.liveOfficialTitle}>最新公式: {observation.status}</Text>
-      <Text style={styles.liveOfficialText} numberOfLines={2}>
-        {observation.label} / {observation.observed_at}
-      </Text>
+      <Text style={styles.liveOfficialTitle}>公式状態: {status}{severity !== null ? ` / ${severity}` : ""}</Text>
+      {observation && (
+        <Text style={styles.liveOfficialText} numberOfLines={2}>
+          {observation.label} / {observation.observed_at}
+        </Text>
+      )}
     </View>
   );
 }
 
-function TimelinePanel({ timeline }) {
+function TimelinePanel({ timeline, summary }) {
   if (!timeline || timeline.length === 0) return null;
   const maxCount = Math.max(...timeline.map((item) => item.count), 1);
   return (
     <View style={styles.timelinePanel}>
       <Text style={styles.timelineTitle}>時間推移</Text>
+      {summary && <Text style={styles.timelineSummary}>{summary}</Text>}
       <View style={styles.timelineBars}>
         {timeline.map((item) => {
           const height = `${Math.max((item.count / maxCount) * 100, item.count ? 18 : 6)}%`;
@@ -177,6 +182,25 @@ function CategoryBreakdown({ counts }) {
   );
 }
 
+function HotspotPanel({ hotspots }) {
+  if (!hotspots || hotspots.length === 0) return null;
+  return (
+    <View style={styles.hotspotPanel}>
+      <Text style={styles.hotspotTitle}>重点エリア</Text>
+      {hotspots.map((item) => {
+        const level = RISK_LEVEL_CONFIG[item.risk_level || getRiskLevel(item.max_score)];
+        return (
+          <View style={styles.hotspotItem} key={item.location}>
+            <View style={[styles.hotspotMarker, { backgroundColor: level.color }]} />
+            <Text style={styles.hotspotLocation} numberOfLines={1}>{item.location}</Text>
+            <Text style={styles.hotspotMeta}>{item.count}件</Text>
+          </View>
+        );
+      })}
+    </View>
+  );
+}
+
 function SignalChip({ signal }) {
   const score = Math.round((signal.severity || 0) * 100);
   return (
@@ -208,6 +232,26 @@ function RiskFactors({ factors }) {
   );
 }
 
+function ActionPlan({ actions }) {
+  if (!actions || actions.length === 0) return null;
+  return (
+    <View style={styles.actionList}>
+      {actions.map((item, index) => {
+        const urgent = item.priority === "高";
+        return (
+          <View style={[styles.actionItem, urgent && styles.actionItemUrgent]} key={`${item.action}-${index}`}>
+            <View style={styles.actionHeader}>
+              <Text style={[styles.actionPriority, urgent && styles.actionPriorityUrgent]}>{item.priority}</Text>
+              <Text style={styles.actionText}>{item.action}</Text>
+            </View>
+            <Text style={styles.actionReason}>{item.reason}</Text>
+          </View>
+        );
+      })}
+    </View>
+  );
+}
+
 function RiskCard({ risk, onPress }) {
   const cat = CATEGORY_CONFIG[risk.category] || CATEGORY_CONFIG.unknown;
   const level = risk.risk_level || getRiskLevel(risk.risk_score);
@@ -229,6 +273,12 @@ function RiskCard({ risk, onPress }) {
 
       <Text style={styles.cardText} numberOfLines={2}>{risk.text}</Text>
       {risk.risk_reason && <Text style={styles.reasonText} numberOfLines={2}>{risk.risk_reason}</Text>}
+      {risk.action_plan?.[0] && (
+        <View style={styles.primaryActionBox}>
+          <Text style={styles.primaryActionLabel}>優先行動</Text>
+          <Text style={styles.primaryActionText} numberOfLines={1}>{risk.action_plan[0].action}</Text>
+        </View>
+      )}
 
       <View style={styles.signalRow}>
         {signals.length > 0 ? (
@@ -289,6 +339,7 @@ function AnalysisModal({ event, visible, onClose }) {
   const signals = result?.official_signals || event.official_signals || [];
   const factors = result?.risk_factors || event.risk_factors;
   const reason = result?.risk_reason || event.risk_reason;
+  const actionPlan = result?.action_plan || event.action_plan;
   const confidenceScore = result?.confidence_score ?? event.confidence_score;
   const confidenceLabel = result?.confidence_label || event.confidence_label;
 
@@ -341,7 +392,13 @@ function AnalysisModal({ event, visible, onClose }) {
           </View>
 
           <View style={styles.analysisSection}>
+            <Text style={styles.sectionTitle}>推奨行動</Text>
+            <ActionPlan actions={actionPlan} />
+          </View>
+
+          <View style={styles.analysisSection}>
             <Text style={styles.sectionTitle}>{result?.model ? `${result.model} 分析` : "AI 分析"}</Text>
+            {result?.cached && <Text style={styles.cacheText}>保存済み分析を表示しています</Text>}
 
             {loading && (
               <View style={styles.loadingContainer}>
@@ -420,7 +477,9 @@ export default function App() {
     try {
       const resp = await fetch(`${BACKEND_URL}/official/live/sync`, { method: "POST" });
       if (!resp.ok) throw new Error(`Server error: ${resp.status}`);
+      const result = await resp.json();
       await fetchDashboard(true);
+      Alert.alert("公式情報を更新しました", `取得 ${result.fetched}件 / 保存 ${result.saved}件`);
     } catch (e) {
       Alert.alert("公式情報の更新に失敗しました", e.message);
       setRefreshing(false);
@@ -439,6 +498,8 @@ export default function App() {
   const categoryCounts = dashboard?.category_counts;
   const dataSummary = dashboard?.data_summary;
   const riskTimeline = dashboard?.risk_timeline || [];
+  const timelineSummary = dashboard?.timeline_summary;
+  const hotspots = dashboard?.hotspots || [];
   const aiConfig = dashboard?.ai_config;
   const topRisk = dashboard?.top_risk;
   const topLevel = topRisk ? RISK_LEVEL_CONFIG[topRisk.risk_level || getRiskLevel(topRisk.risk_score)] : RISK_LEVEL_CONFIG.low;
@@ -464,10 +525,11 @@ export default function App() {
         </View>
         <Text style={styles.summaryBasis}>{dashboard?.basis || "SNS模擬投稿と公式情報を統合した参考評価"}</Text>
         <DataSummary summary={dataSummary} />
-        <LiveOfficialNote observation={dataSummary?.latest_live_official} />
+        <LiveOfficialNote observation={dataSummary?.latest_live_official} summary={dataSummary?.live_official_summary} />
         <SystemStatus aiConfig={aiConfig} />
-        <TimelinePanel timeline={riskTimeline} />
+        <TimelinePanel timeline={riskTimeline} summary={timelineSummary} />
         <CategoryBreakdown counts={categoryCounts} />
+        <HotspotPanel hotspots={hotspots} />
         <View style={styles.metricRow}>
           <SummaryMetric label="高" value={levelCounts.high} color={RISK_LEVEL_CONFIG.high.color} />
           <SummaryMetric label="中" value={levelCounts.medium} color={RISK_LEVEL_CONFIG.medium.color} />
@@ -601,6 +663,7 @@ const styles = StyleSheet.create({
     borderTopColor: "#2C2C2E",
   },
   timelineTitle: { fontSize: 12, color: "#AEAEB2", fontWeight: "800", marginBottom: 8 },
+  timelineSummary: { fontSize: 12, color: "#C7C7CC", lineHeight: 17, marginBottom: 8 },
   timelineBars: { height: 82, flexDirection: "row", alignItems: "flex-end", gap: 8 },
   timelineItem: { flex: 1, alignItems: "center", gap: 3 },
   timelineTrack: {
@@ -627,6 +690,23 @@ const styles = StyleSheet.create({
   categoryDot: { width: 7, height: 7, borderRadius: 4 },
   categoryBreakdownText: { fontSize: 11, color: "#D1D1D6" },
   categoryBreakdownCount: { fontSize: 11, color: "#F2F2F7", fontWeight: "800" },
+  hotspotPanel: {
+    marginTop: 12,
+    gap: 7,
+  },
+  hotspotTitle: { fontSize: 12, color: "#AEAEB2", fontWeight: "800" },
+  hotspotItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    backgroundColor: "#242426",
+    borderRadius: 8,
+    paddingHorizontal: 9,
+    paddingVertical: 7,
+  },
+  hotspotMarker: { width: 8, height: 8, borderRadius: 4 },
+  hotspotLocation: { flex: 1, fontSize: 12, color: "#F2F2F7", fontWeight: "800" },
+  hotspotMeta: { fontSize: 11, color: "#AEAEB2" },
   metricRow: { flexDirection: "row", marginTop: 16, borderTopWidth: 1, borderTopColor: "#2C2C2E", paddingTop: 12 },
   metricItem: { flex: 1 },
   metricValue: { fontSize: 21, fontWeight: "800", textAlign: "center" },
@@ -690,6 +770,18 @@ const styles = StyleSheet.create({
   confidenceValue: { fontSize: 12, fontWeight: "800" },
   cardText: { fontSize: 14, color: "#E5E5EA", lineHeight: 20, marginTop: 10, marginBottom: 10 },
   reasonText: { fontSize: 12, color: "#C7C7CC", lineHeight: 17, marginBottom: 10 },
+  primaryActionBox: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    backgroundColor: "#242426",
+    borderRadius: 8,
+    paddingHorizontal: 9,
+    paddingVertical: 7,
+    marginBottom: 10,
+  },
+  primaryActionLabel: { fontSize: 11, color: "#64D2FF", fontWeight: "800" },
+  primaryActionText: { flex: 1, fontSize: 12, color: "#F2F2F7", fontWeight: "800" },
   signalRow: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
   signalChip: {
     flexDirection: "row",
@@ -731,6 +823,30 @@ const styles = StyleSheet.create({
   },
   factorLabel: { fontSize: 11, color: "#AEAEB2" },
   factorValue: { fontSize: 14, color: "#F2F2F7", fontWeight: "800", marginTop: 1 },
+  actionList: { gap: 8 },
+  actionItem: {
+    padding: 10,
+    borderRadius: 8,
+    backgroundColor: "#242426",
+    borderWidth: 1,
+    borderColor: "#2C2C2E",
+  },
+  actionItemUrgent: { backgroundColor: "#3A1F22", borderColor: "#703236" },
+  actionHeader: { flexDirection: "row", alignItems: "center", gap: 8 },
+  actionPriority: {
+    minWidth: 34,
+    textAlign: "center",
+    fontSize: 11,
+    color: "#D1D1D6",
+    fontWeight: "800",
+    backgroundColor: "#3A3A3C",
+    borderRadius: 8,
+    paddingHorizontal: 6,
+    paddingVertical: 3,
+  },
+  actionPriorityUrgent: { color: "#fff", backgroundColor: "#F25F5C" },
+  actionText: { flex: 1, fontSize: 13, color: "#F2F2F7", fontWeight: "800" },
+  actionReason: { fontSize: 12, color: "#C7C7CC", lineHeight: 17, marginTop: 6 },
 
   modalContainer: { flex: 1, backgroundColor: "#111111" },
   modalHeader: {
@@ -793,6 +909,7 @@ const styles = StyleSheet.create({
   fallbackBox: { backgroundColor: "#1D2B36", borderRadius: 8, padding: 10, borderWidth: 1, borderColor: "#28546B" },
   fallbackTitle: { fontSize: 13, color: "#64D2FF", fontWeight: "800", marginBottom: 3 },
   fallbackText: { fontSize: 12, color: "#D1D1D6", lineHeight: 17 },
+  cacheText: { fontSize: 12, color: "#AEAEB2", marginBottom: 10 },
   analysisText: { fontSize: 14, color: "#E5E5EA", lineHeight: 22 },
   disclaimerBox: { backgroundColor: "#332817", borderRadius: 8, padding: 10, borderWidth: 1, borderColor: "#6B531A" },
   disclaimerText: { fontSize: 11, color: "#FFD166", lineHeight: 16 },
