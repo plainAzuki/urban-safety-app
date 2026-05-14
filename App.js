@@ -34,6 +34,13 @@ const RISK_LEVEL_CONFIG = {
 const FILTERS = ["all", "fire", "flood", "traffic_accident", "railway"];
 const TIME_WINDOWS = [6, 24, 72];
 
+// バックエンドのリスク内訳を、利用者が直感的に読める短い表示名へ変換する。
+const FACTOR_LABELS = {
+  sns: "SNS",
+  weather: "気象",
+  transport: "交通",
+};
+
 function getRiskLevel(score = 0) {
   if (score >= 0.7) return "high";
   if (score >= 0.4) return "medium";
@@ -79,12 +86,124 @@ function SummaryMetric({ label, value, color }) {
   );
 }
 
+function ConfidenceBadge({ score, label }) {
+  if (score === undefined || score === null) return null;
+  const color = score >= 0.75 ? "#30D158" : score >= 0.45 ? "#FFB000" : "#AEAEB2";
+  return (
+    <View style={styles.confidenceBadge}>
+      <Text style={styles.confidenceLabel}>信頼度</Text>
+      <Text style={[styles.confidenceValue, { color }]}>{label || Math.round(score * 100)}</Text>
+    </View>
+  );
+}
+
+function DataSummary({ summary }) {
+  if (!summary) return null;
+  return (
+    <View style={styles.dataSummaryRow}>
+      <Text style={styles.dataSummaryText}>対象 {summary.event_count}件</Text>
+      <Text style={styles.dataSummaryText}>公式信号 {summary.official_signal_count}件</Text>
+      <Text style={styles.dataSummaryText}>Live公式 {summary.live_official_count || 0}件</Text>
+      {summary.latest_timestamp && <Text style={styles.dataSummaryText}>更新 {summary.latest_timestamp}</Text>}
+    </View>
+  );
+}
+
+function SystemStatus({ aiConfig }) {
+  if (!aiConfig) return null;
+  return (
+    <View style={styles.systemStatusRow}>
+      <Text style={styles.systemStatusText}>AI {aiConfig.provider}</Text>
+      <Text style={styles.systemStatusText}>{aiConfig.model}</Text>
+    </View>
+  );
+}
+
+function LiveOfficialNote({ observation }) {
+  if (!observation) return null;
+  return (
+    <View style={styles.liveOfficialNote}>
+      <Text style={styles.liveOfficialTitle}>最新公式: {observation.status}</Text>
+      <Text style={styles.liveOfficialText} numberOfLines={2}>
+        {observation.label} / {observation.observed_at}
+      </Text>
+    </View>
+  );
+}
+
+function TimelinePanel({ timeline }) {
+  if (!timeline || timeline.length === 0) return null;
+  const maxCount = Math.max(...timeline.map((item) => item.count), 1);
+  return (
+    <View style={styles.timelinePanel}>
+      <Text style={styles.timelineTitle}>時間推移</Text>
+      <View style={styles.timelineBars}>
+        {timeline.map((item) => {
+          const height = `${Math.max((item.count / maxCount) * 100, item.count ? 18 : 6)}%`;
+          const color = item.high_count > 0 ? RISK_LEVEL_CONFIG.high.color : item.max_score >= 0.4 ? RISK_LEVEL_CONFIG.medium.color : "#3A3A3C";
+          return (
+            <View style={styles.timelineItem} key={item.label}>
+              <View style={styles.timelineTrack}>
+                <View style={[styles.timelineFill, { height, backgroundColor: color }]} />
+              </View>
+              <Text style={styles.timelineCount}>{item.count}</Text>
+              <Text style={styles.timelineLabel}>{item.label}</Text>
+            </View>
+          );
+        })}
+      </View>
+    </View>
+  );
+}
+
+function CategoryBreakdown({ counts }) {
+  if (!counts) return null;
+  const entries = FILTERS.filter((key) => key !== "all" && counts[key]).map((key) => ({
+    key,
+    count: counts[key],
+    config: CATEGORY_CONFIG[key],
+  }));
+  if (entries.length === 0) return null;
+  return (
+    <View style={styles.categoryBreakdown}>
+      {entries.map((item) => (
+        <View style={styles.categoryBreakdownItem} key={item.key}>
+          <View style={[styles.categoryDot, { backgroundColor: item.config.color }]} />
+          <Text style={styles.categoryBreakdownText}>{item.config.shortLabel}</Text>
+          <Text style={styles.categoryBreakdownCount}>{item.count}</Text>
+        </View>
+      ))}
+    </View>
+  );
+}
+
 function SignalChip({ signal }) {
   const score = Math.round((signal.severity || 0) * 100);
   return (
     <View style={styles.signalChip}>
       <Text style={styles.signalText}>{signal.label}</Text>
       <Text style={styles.signalScore}>{score}</Text>
+    </View>
+  );
+}
+
+function FactorPill({ label, value }) {
+  const percent = Math.round((value || 0) * 100);
+  return (
+    <View style={styles.factorPill}>
+      <Text style={styles.factorLabel}>{label}</Text>
+      <Text style={styles.factorValue}>{percent}</Text>
+    </View>
+  );
+}
+
+function RiskFactors({ factors }) {
+  if (!factors) return null;
+  return (
+    <View style={styles.factorRow}>
+      {Object.entries(FACTOR_LABELS).map(([key, label]) => (
+        <FactorPill key={key} label={label} value={factors[key]} />
+      ))}
     </View>
   );
 }
@@ -106,8 +225,10 @@ function RiskCard({ risk, onPress }) {
           <Text style={[styles.levelBadgeText, { color: levelConfig.color }]}>{levelConfig.title}</Text>
         </View>
       </View>
+      <ConfidenceBadge score={risk.confidence_score} label={risk.confidence_label} />
 
       <Text style={styles.cardText} numberOfLines={2}>{risk.text}</Text>
+      {risk.risk_reason && <Text style={styles.reasonText} numberOfLines={2}>{risk.risk_reason}</Text>}
 
       <View style={styles.signalRow}>
         {signals.length > 0 ? (
@@ -126,6 +247,7 @@ function RiskCard({ risk, onPress }) {
         <Text style={styles.riskLabel}>総合リスク</Text>
         <RiskBar score={risk.risk_score} />
       </View>
+      <RiskFactors factors={risk.risk_factors} />
     </TouchableOpacity>
   );
 }
@@ -165,6 +287,10 @@ function AnalysisModal({ event, visible, onClose }) {
   const level = event.risk_level || getRiskLevel(event.risk_score);
   const levelConfig = RISK_LEVEL_CONFIG[level];
   const signals = result?.official_signals || event.official_signals || [];
+  const factors = result?.risk_factors || event.risk_factors;
+  const reason = result?.risk_reason || event.risk_reason;
+  const confidenceScore = result?.confidence_score ?? event.confidence_score;
+  const confidenceLabel = result?.confidence_label || event.confidence_label;
 
   return (
     <Modal visible={visible} animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
@@ -188,6 +314,7 @@ function AnalysisModal({ event, visible, onClose }) {
                 <Text style={[styles.levelBadgeText, { color: levelConfig.color }]}>{levelConfig.title}</Text>
               </View>
             </View>
+            <ConfidenceBadge score={confidenceScore} label={confidenceLabel} />
             <Text style={styles.eventInfoText}>{event.text}</Text>
             <View style={styles.metaRow}>
               <Text style={styles.metaChip}>{event.location}</Text>
@@ -198,6 +325,8 @@ function AnalysisModal({ event, visible, onClose }) {
               <Text style={styles.riskLabel}>総合リスク</Text>
               <RiskBar score={result?.risk_score || event.risk_score} />
             </View>
+            {reason && <Text style={styles.detailReasonText}>{reason}</Text>}
+            <RiskFactors factors={factors} />
           </View>
 
           <View style={styles.analysisSection}>
@@ -233,6 +362,12 @@ function AnalysisModal({ event, visible, onClose }) {
 
             {result && !loading && (
               <View style={styles.analysisResult}>
+                {result.ai_error && (
+                  <View style={styles.fallbackBox}>
+                    <Text style={styles.fallbackTitle}>AI接続は未使用</Text>
+                    <Text style={styles.fallbackText}>現在は保存済みデータとルールに基づく参考提案を表示しています。</Text>
+                  </View>
+                )}
                 <Text style={styles.analysisText}>{result.analysis}</Text>
                 <View style={styles.disclaimerBox}>
                   <Text style={styles.disclaimerText}>
@@ -256,6 +391,7 @@ export default function App() {
   const [modalVisible, setModalVisible] = useState(false);
   const [activeCategory, setActiveCategory] = useState("all");
   const [timeWindow, setTimeWindow] = useState(24);
+  const [syncingOfficial, setSyncingOfficial] = useState(false);
 
   const fetchDashboard = useCallback(async (isRefresh = false) => {
     if (!isRefresh) setLoading(true);
@@ -279,6 +415,20 @@ export default function App() {
     fetchDashboard();
   }, [fetchDashboard]);
 
+  const syncOfficial = async () => {
+    setSyncingOfficial(true);
+    try {
+      const resp = await fetch(`${BACKEND_URL}/official/live/sync`, { method: "POST" });
+      if (!resp.ok) throw new Error(`Server error: ${resp.status}`);
+      await fetchDashboard(true);
+    } catch (e) {
+      Alert.alert("公式情報の更新に失敗しました", e.message);
+      setRefreshing(false);
+    } finally {
+      setSyncingOfficial(false);
+    }
+  };
+
   const openRisk = (risk) => {
     setSelectedRisk(risk);
     setModalVisible(true);
@@ -286,6 +436,10 @@ export default function App() {
 
   const risks = dashboard?.risks || [];
   const levelCounts = dashboard?.level_counts || { high: 0, medium: 0, low: 0 };
+  const categoryCounts = dashboard?.category_counts;
+  const dataSummary = dashboard?.data_summary;
+  const riskTimeline = dashboard?.risk_timeline || [];
+  const aiConfig = dashboard?.ai_config;
   const topRisk = dashboard?.top_risk;
   const topLevel = topRisk ? RISK_LEVEL_CONFIG[topRisk.risk_level || getRiskLevel(topRisk.risk_score)] : RISK_LEVEL_CONFIG.low;
 
@@ -308,6 +462,12 @@ export default function App() {
           </View>
           <Text style={styles.summaryWindow}>過去{timeWindow}時間</Text>
         </View>
+        <Text style={styles.summaryBasis}>{dashboard?.basis || "SNS模擬投稿と公式情報を統合した参考評価"}</Text>
+        <DataSummary summary={dataSummary} />
+        <LiveOfficialNote observation={dataSummary?.latest_live_official} />
+        <SystemStatus aiConfig={aiConfig} />
+        <TimelinePanel timeline={riskTimeline} />
+        <CategoryBreakdown counts={categoryCounts} />
         <View style={styles.metricRow}>
           <SummaryMetric label="高" value={levelCounts.high} color={RISK_LEVEL_CONFIG.high.color} />
           <SummaryMetric label="中" value={levelCounts.medium} color={RISK_LEVEL_CONFIG.medium.color} />
@@ -341,6 +501,9 @@ export default function App() {
               onPress={() => setTimeWindow(hours)}
             />
           ))}
+          <TouchableOpacity style={styles.syncButton} onPress={syncOfficial} activeOpacity={0.8} disabled={syncingOfficial}>
+            <Text style={styles.syncButtonText}>{syncingOfficial ? "更新中" : "公式更新"}</Text>
+          </TouchableOpacity>
         </View>
       </View>
 
@@ -402,6 +565,68 @@ const styles = StyleSheet.create({
   summaryLabel: { fontSize: 12, color: "#AEAEB2", marginBottom: 4 },
   summaryTitle: { fontSize: 24, fontWeight: "800", letterSpacing: 0 },
   summaryWindow: { fontSize: 12, color: "#AEAEB2", paddingTop: 3 },
+  summaryBasis: { fontSize: 12, color: "#C7C7CC", lineHeight: 17, marginTop: 10 },
+  dataSummaryRow: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 10 },
+  dataSummaryText: {
+    fontSize: 11,
+    color: "#D1D1D6",
+    backgroundColor: "#242426",
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+    borderRadius: 8,
+  },
+  systemStatusRow: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 8 },
+  systemStatusText: {
+    fontSize: 11,
+    color: "#64D2FF",
+    backgroundColor: "#1D2B36",
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+    borderRadius: 8,
+  },
+  liveOfficialNote: {
+    marginTop: 10,
+    padding: 10,
+    borderRadius: 8,
+    backgroundColor: "#1D2B36",
+    borderWidth: 1,
+    borderColor: "#28546B",
+  },
+  liveOfficialTitle: { fontSize: 12, color: "#64D2FF", fontWeight: "800", marginBottom: 3 },
+  liveOfficialText: { fontSize: 12, color: "#D1D1D6", lineHeight: 17 },
+  timelinePanel: {
+    marginTop: 12,
+    paddingTop: 10,
+    borderTopWidth: 1,
+    borderTopColor: "#2C2C2E",
+  },
+  timelineTitle: { fontSize: 12, color: "#AEAEB2", fontWeight: "800", marginBottom: 8 },
+  timelineBars: { height: 82, flexDirection: "row", alignItems: "flex-end", gap: 8 },
+  timelineItem: { flex: 1, alignItems: "center", gap: 3 },
+  timelineTrack: {
+    width: "100%",
+    height: 42,
+    borderRadius: 8,
+    backgroundColor: "#242426",
+    justifyContent: "flex-end",
+    overflow: "hidden",
+  },
+  timelineFill: { width: "100%", borderRadius: 8 },
+  timelineCount: { fontSize: 11, color: "#F2F2F7", fontWeight: "800" },
+  timelineLabel: { fontSize: 10, color: "#8E8E93" },
+  categoryBreakdown: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 12 },
+  categoryBreakdownItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    backgroundColor: "#242426",
+    borderRadius: 8,
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+  },
+  categoryDot: { width: 7, height: 7, borderRadius: 4 },
+  categoryBreakdownText: { fontSize: 11, color: "#D1D1D6" },
+  categoryBreakdownCount: { fontSize: 11, color: "#F2F2F7", fontWeight: "800" },
   metricRow: { flexDirection: "row", marginTop: 16, borderTopWidth: 1, borderTopColor: "#2C2C2E", paddingTop: 12 },
   metricItem: { flex: 1 },
   metricValue: { fontSize: 21, fontWeight: "800", textAlign: "center" },
@@ -409,6 +634,17 @@ const styles = StyleSheet.create({
   controlSection: { paddingHorizontal: 12, marginBottom: 4, gap: 8 },
   filterRow: { gap: 8, paddingRight: 12 },
   windowRow: { flexDirection: "row", gap: 8 },
+  syncButton: {
+    height: 34,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    backgroundColor: "#1D2B36",
+    borderWidth: 1,
+    borderColor: "#28546B",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  syncButtonText: { fontSize: 13, color: "#64D2FF", fontWeight: "800" },
   filterChip: {
     minWidth: 54,
     height: 34,
@@ -439,7 +675,21 @@ const styles = StyleSheet.create({
   locationText: { fontSize: 12, color: "#AEAEB2", marginTop: 3 },
   levelBadge: { minWidth: 56, paddingHorizontal: 9, paddingVertical: 5, borderRadius: 8, alignItems: "center" },
   levelBadgeText: { fontSize: 12, fontWeight: "800" },
+  confidenceBadge: {
+    flexDirection: "row",
+    alignSelf: "flex-start",
+    alignItems: "center",
+    gap: 6,
+    marginTop: 8,
+    backgroundColor: "#242426",
+    borderRadius: 8,
+    paddingHorizontal: 9,
+    paddingVertical: 5,
+  },
+  confidenceLabel: { fontSize: 11, color: "#AEAEB2" },
+  confidenceValue: { fontSize: 12, fontWeight: "800" },
   cardText: { fontSize: 14, color: "#E5E5EA", lineHeight: 20, marginTop: 10, marginBottom: 10 },
+  reasonText: { fontSize: 12, color: "#C7C7CC", lineHeight: 17, marginBottom: 10 },
   signalRow: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
   signalChip: {
     flexDirection: "row",
@@ -468,6 +718,19 @@ const styles = StyleSheet.create({
   },
   riskBarFill: { height: "100%", borderRadius: 8 },
   riskBarLabel: { position: "absolute", right: 0, top: -15, fontSize: 11, fontWeight: "800" },
+  factorRow: { flexDirection: "row", gap: 8, marginTop: 10 },
+  factorPill: {
+    flex: 1,
+    minHeight: 36,
+    borderRadius: 8,
+    backgroundColor: "#242426",
+    borderWidth: 1,
+    borderColor: "#2C2C2E",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  factorLabel: { fontSize: 11, color: "#AEAEB2" },
+  factorValue: { fontSize: 14, color: "#F2F2F7", fontWeight: "800", marginTop: 1 },
 
   modalContainer: { flex: 1, backgroundColor: "#111111" },
   modalHeader: {
@@ -502,6 +765,7 @@ const styles = StyleSheet.create({
     borderColor: "#2C2C2E",
   },
   eventInfoText: { fontSize: 15, color: "#E5E5EA", lineHeight: 22, marginTop: 10 },
+  detailReasonText: { fontSize: 13, color: "#C7C7CC", lineHeight: 19, marginTop: 12 },
   metaChip: {
     fontSize: 12,
     color: "#D1D1D6",
@@ -526,6 +790,9 @@ const styles = StyleSheet.create({
   retryBtn: { backgroundColor: "#F25F5C", paddingVertical: 8, paddingHorizontal: 16, borderRadius: 8, alignSelf: "flex-start" },
   retryBtnText: { color: "#fff", fontWeight: "800" },
   analysisResult: { gap: 12 },
+  fallbackBox: { backgroundColor: "#1D2B36", borderRadius: 8, padding: 10, borderWidth: 1, borderColor: "#28546B" },
+  fallbackTitle: { fontSize: 13, color: "#64D2FF", fontWeight: "800", marginBottom: 3 },
+  fallbackText: { fontSize: 12, color: "#D1D1D6", lineHeight: 17 },
   analysisText: { fontSize: 14, color: "#E5E5EA", lineHeight: 22 },
   disclaimerBox: { backgroundColor: "#332817", borderRadius: 8, padding: 10, borderWidth: 1, borderColor: "#6B531A" },
   disclaimerText: { fontSize: 11, color: "#FFD166", lineHeight: 16 },
