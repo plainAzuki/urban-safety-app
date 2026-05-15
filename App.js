@@ -13,8 +13,7 @@ import {
   StyleSheet,
 } from "react-native";
 
-// ★★★ 自分のPCのローカルIPアドレスに変更してください ★★★
-const BACKEND_URL = "http://192.0.0.2:8000";
+const BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL || "http://10.14.3.203:8000";
 
 const CATEGORY_CONFIG = {
   all: { label: "全て", shortLabel: "全て", color: "#D8DEE9" },
@@ -201,12 +200,24 @@ function HotspotPanel({ hotspots }) {
   );
 }
 
-// 卒研の評価軸を画面上でも確認できるよう、SNS単独と多ソース融合の指標を並べて表示する。
+function formatPercent(value = 0) {
+  return Math.round((value || 0) * 100);
+}
+
+function formatSignedPercent(value = 0) {
+  const percent = Math.round((value || 0) * 100);
+  return `${percent >= 0 ? "+" : ""}${percent}`;
+}
+
+// 卒研の評価軸を画面上でも確認できるよう、比較条件・失敗例・紐づけルールをまとめて表示する。
 function EvaluationPanel({ summary }) {
   if (!summary?.results?.length) return null;
   const multiSource = summary.results.find((item) => item.mode === "multi_source") || summary.best_mode;
   const snsOnly = summary.results.find((item) => item.mode === "sns_only");
   const clustering = summary.clustering;
+  const comparison = summary.comparison_summary;
+  const failures = summary.failure_examples;
+  const rule = summary.official_link_rule;
   return (
     <View style={styles.evaluationPanel}>
       <View style={styles.evaluationHeader}>
@@ -220,12 +231,26 @@ function EvaluationPanel({ summary }) {
       <Text style={styles.evaluationNote}>
         SNS単独と公式情報統合ありを比較し、Precision / Recall / F1 を算出しています。
       </Text>
-      {clustering && (
-        <View style={styles.clusterRow}>
-          <Text style={styles.clusterText}>重複削減 {Math.round(clustering.duplicate_reduction_rate * 100)}%</Text>
-          <Text style={styles.clusterText}>純度 {Math.round(clustering.cluster_purity * 100)}%</Text>
+      {comparison && (
+        <View style={styles.evaluationDeltaRow}>
+          <Text style={styles.evaluationDeltaText}>F1 {formatSignedPercent(comparison.f1_delta)}</Text>
+          <Text style={styles.evaluationDeltaText}>Recall {formatSignedPercent(comparison.recall_delta)}</Text>
+          <Text style={styles.evaluationDeltaText}>Macro {formatSignedPercent(comparison.macro_f1_delta)}</Text>
         </View>
       )}
+      <View style={styles.evaluationTable}>
+        {summary.results.map((result) => (
+          <EvaluationResultRow key={result.mode} result={result} highlight={result.mode === "multi_source"} />
+        ))}
+      </View>
+      {clustering && (
+        <View style={styles.clusterRow}>
+          <Text style={styles.clusterText}>重複削減 {formatPercent(clustering.duplicate_reduction_rate)}%</Text>
+          <Text style={styles.clusterText}>純度 {formatPercent(clustering.cluster_purity)}%</Text>
+        </View>
+      )}
+      <FailureExamples examples={failures} />
+      <RuleSummary rule={rule} officialMatchCount={summary.official_match_count} />
     </View>
   );
 }
@@ -235,12 +260,76 @@ function EvaluationMetric({ result, compactLabel, highlight }) {
     <View style={[styles.evaluationMetric, highlight && styles.evaluationMetricHighlight]}>
       <Text style={styles.evaluationMetricLabel}>{compactLabel}</Text>
       <View style={styles.evaluationScoreRow}>
-        <Text style={styles.evaluationScore}>P {Math.round(result.precision * 100)}</Text>
-        <Text style={styles.evaluationScore}>R {Math.round(result.recall * 100)}</Text>
+        <Text style={styles.evaluationScore}>P {formatPercent(result.precision)}</Text>
+        <Text style={styles.evaluationScore}>R {formatPercent(result.recall)}</Text>
         <Text style={[styles.evaluationScore, highlight && styles.evaluationScoreHighlight]}>
-          F1 {Math.round(result.f1 * 100)}
+          F1 {formatPercent(result.f1)}
         </Text>
       </View>
+    </View>
+  );
+}
+
+function EvaluationResultRow({ result, highlight }) {
+  const f1Width = `${Math.min(Math.max(result.f1 || 0, 0), 1) * 100}%`;
+  return (
+    <View style={styles.evaluationResultRow}>
+      <Text style={[styles.evaluationModeLabel, highlight && styles.evaluationModeLabelHighlight]} numberOfLines={1}>
+        {result.label}
+      </Text>
+      <View style={styles.evaluationBarCell}>
+        <View style={styles.evaluationF1Track}>
+          <View style={[styles.evaluationF1Fill, { width: f1Width }, highlight && styles.evaluationF1FillHighlight]} />
+        </View>
+      </View>
+      <Text style={styles.evaluationTableScore}>P{formatPercent(result.precision)}</Text>
+      <Text style={styles.evaluationTableScore}>R{formatPercent(result.recall)}</Text>
+      <Text style={[styles.evaluationTableScore, highlight && styles.evaluationTableScoreHighlight]}>
+        F1{formatPercent(result.f1)}
+      </Text>
+    </View>
+  );
+}
+
+function FailureExamples({ examples }) {
+  if (!examples) return null;
+  const falsePositives = examples.false_positives || [];
+  const falseNegatives = examples.false_negatives || [];
+  if (falsePositives.length === 0 && falseNegatives.length === 0) return null;
+  return (
+    <View style={styles.failurePanel}>
+      <Text style={styles.failureTitle}>失敗例分析</Text>
+      <FailureColumn title="誤検知" items={falsePositives} />
+      <FailureColumn title="見逃し" items={falseNegatives} />
+    </View>
+  );
+}
+
+function FailureColumn({ title, items }) {
+  if (!items || items.length === 0) return null;
+  return (
+    <View style={styles.failureColumn}>
+      <Text style={styles.failureColumnTitle}>{title}</Text>
+      {items.slice(0, 2).map((item) => (
+        <Text style={styles.failureText} numberOfLines={2} key={`${title}-${item.post_id}`}>
+          {item.post_id}: {item.text}
+        </Text>
+      ))}
+    </View>
+  );
+}
+
+function RuleSummary({ rule, officialMatchCount }) {
+  if (!rule) return null;
+  return (
+    <View style={styles.rulePanel}>
+      <Text style={styles.ruleTitle}>公式信号紐づけ</Text>
+      <View style={styles.ruleRow}>
+        <Text style={styles.ruleText}>±{rule.time_window_hours}h</Text>
+        <Text style={styles.ruleText}>{rule.distance_window_km}km</Text>
+        <Text style={styles.ruleText}>対応 {officialMatchCount || 0}件</Text>
+      </View>
+      <Text style={styles.ruleDescription} numberOfLines={2}>{rule.type_rule}</Text>
     </View>
   );
 }
@@ -779,6 +868,31 @@ const styles = StyleSheet.create({
   evaluationScore: { fontSize: 11, color: "#AEAEB2", fontWeight: "800" },
   evaluationScoreHighlight: { color: "#64D2FF" },
   evaluationNote: { fontSize: 11, color: "#C7C7CC", lineHeight: 16, marginTop: 8 },
+  evaluationDeltaRow: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 8 },
+  evaluationDeltaText: {
+    fontSize: 11,
+    color: "#64D2FF",
+    backgroundColor: "#1D2B36",
+    borderRadius: 8,
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+    fontWeight: "800",
+  },
+  evaluationTable: { marginTop: 10, gap: 7 },
+  evaluationResultRow: { flexDirection: "row", alignItems: "center", gap: 7, minHeight: 30 },
+  evaluationModeLabel: { width: 84, fontSize: 11, color: "#D1D1D6", fontWeight: "800" },
+  evaluationModeLabelHighlight: { color: "#64D2FF" },
+  evaluationBarCell: { flex: 1 },
+  evaluationF1Track: {
+    height: 8,
+    borderRadius: 8,
+    backgroundColor: "#242426",
+    overflow: "hidden",
+  },
+  evaluationF1Fill: { height: "100%", borderRadius: 8, backgroundColor: "#8E8E93" },
+  evaluationF1FillHighlight: { backgroundColor: "#64D2FF" },
+  evaluationTableScore: { width: 32, fontSize: 10, color: "#AEAEB2", fontWeight: "800", textAlign: "right" },
+  evaluationTableScoreHighlight: { color: "#64D2FF" },
   clusterRow: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 8 },
   clusterText: {
     fontSize: 11,
@@ -788,6 +902,35 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
     paddingVertical: 5,
   },
+  failurePanel: {
+    marginTop: 10,
+    paddingTop: 10,
+    borderTopWidth: 1,
+    borderTopColor: "#2C2C2E",
+    gap: 8,
+  },
+  failureTitle: { fontSize: 12, color: "#AEAEB2", fontWeight: "800" },
+  failureColumn: { gap: 5 },
+  failureColumnTitle: { fontSize: 11, color: "#64D2FF", fontWeight: "800" },
+  failureText: { fontSize: 11, color: "#D1D1D6", lineHeight: 16 },
+  rulePanel: {
+    marginTop: 10,
+    paddingTop: 10,
+    borderTopWidth: 1,
+    borderTopColor: "#2C2C2E",
+  },
+  ruleTitle: { fontSize: 12, color: "#AEAEB2", fontWeight: "800", marginBottom: 7 },
+  ruleRow: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+  ruleText: {
+    fontSize: 11,
+    color: "#D1D1D6",
+    backgroundColor: "#242426",
+    borderRadius: 8,
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+    fontWeight: "800",
+  },
+  ruleDescription: { fontSize: 11, color: "#C7C7CC", lineHeight: 16, marginTop: 7 },
   metricRow: { flexDirection: "row", marginTop: 16, borderTopWidth: 1, borderTopColor: "#2C2C2E", paddingTop: 12 },
   metricItem: { flex: 1 },
   metricValue: { fontSize: 21, fontWeight: "800", textAlign: "center" },

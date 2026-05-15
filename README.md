@@ -9,7 +9,11 @@ npm install
 npm start
 ```
 
-`App.js` の `BACKEND_URL` は、自分のPCのローカルIPアドレスに合わせて変更してください。
+デフォルトの `BACKEND_URL` は現在の開発PCのローカルIPを指しています。別の環境では次のように上書きできます。
+
+```bash
+EXPO_PUBLIC_BACKEND_URL=http://<PCのローカルIP>:8000 npm start
+```
 
 ## 表示内容
 
@@ -22,6 +26,10 @@ npm start
 - 気象庁XMLから保存したLive公式件数
 - 過去時間帯ごとのリスク推移
 - SNSのみ vs 多ソース融合ありの評価実験結果
+- A キーワード方式、B SNSのみ、C SNS+気象、D SNS+気象+交通の Precision / Recall / F1
+- SNSのみから多ソース融合への改善量
+- 誤検知・見逃しの失敗例分析
+- 公式信号の時間・距離・種別による紐づけルール
 - 重複投稿クラスタリングの削減率と純度
 - カテゴリ別のリスク件数
 - 公式情報の手動更新ボタン
