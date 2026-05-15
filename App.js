@@ -201,6 +201,50 @@ function HotspotPanel({ hotspots }) {
   );
 }
 
+// 卒研の評価軸を画面上でも確認できるよう、SNS単独と多ソース融合の指標を並べて表示する。
+function EvaluationPanel({ summary }) {
+  if (!summary?.results?.length) return null;
+  const multiSource = summary.results.find((item) => item.mode === "multi_source") || summary.best_mode;
+  const snsOnly = summary.results.find((item) => item.mode === "sns_only");
+  const clustering = summary.clustering;
+  return (
+    <View style={styles.evaluationPanel}>
+      <View style={styles.evaluationHeader}>
+        <Text style={styles.evaluationTitle}>評価実験</Text>
+        <Text style={styles.evaluationDataset}>{summary.dataset_size}件</Text>
+      </View>
+      <View style={styles.evaluationCompareRow}>
+        {snsOnly && <EvaluationMetric result={snsOnly} compactLabel="SNSのみ" />}
+        {multiSource && <EvaluationMetric result={multiSource} compactLabel="多ソース" highlight />}
+      </View>
+      <Text style={styles.evaluationNote}>
+        SNS単独と公式情報統合ありを比較し、Precision / Recall / F1 を算出しています。
+      </Text>
+      {clustering && (
+        <View style={styles.clusterRow}>
+          <Text style={styles.clusterText}>重複削減 {Math.round(clustering.duplicate_reduction_rate * 100)}%</Text>
+          <Text style={styles.clusterText}>純度 {Math.round(clustering.cluster_purity * 100)}%</Text>
+        </View>
+      )}
+    </View>
+  );
+}
+
+function EvaluationMetric({ result, compactLabel, highlight }) {
+  return (
+    <View style={[styles.evaluationMetric, highlight && styles.evaluationMetricHighlight]}>
+      <Text style={styles.evaluationMetricLabel}>{compactLabel}</Text>
+      <View style={styles.evaluationScoreRow}>
+        <Text style={styles.evaluationScore}>P {Math.round(result.precision * 100)}</Text>
+        <Text style={styles.evaluationScore}>R {Math.round(result.recall * 100)}</Text>
+        <Text style={[styles.evaluationScore, highlight && styles.evaluationScoreHighlight]}>
+          F1 {Math.round(result.f1 * 100)}
+        </Text>
+      </View>
+    </View>
+  );
+}
+
 function SignalChip({ signal }) {
   const score = Math.round((signal.severity || 0) * 100);
   return (
@@ -501,6 +545,7 @@ export default function App() {
   const timelineSummary = dashboard?.timeline_summary;
   const hotspots = dashboard?.hotspots || [];
   const aiConfig = dashboard?.ai_config;
+  const evaluationSummary = dashboard?.evaluation_summary;
   const topRisk = dashboard?.top_risk;
   const topLevel = topRisk ? RISK_LEVEL_CONFIG[topRisk.risk_level || getRiskLevel(topRisk.risk_score)] : RISK_LEVEL_CONFIG.low;
 
@@ -528,6 +573,7 @@ export default function App() {
         <LiveOfficialNote observation={dataSummary?.latest_live_official} summary={dataSummary?.live_official_summary} />
         <SystemStatus aiConfig={aiConfig} />
         <TimelinePanel timeline={riskTimeline} summary={timelineSummary} />
+        <EvaluationPanel summary={evaluationSummary} />
         <CategoryBreakdown counts={categoryCounts} />
         <HotspotPanel hotspots={hotspots} />
         <View style={styles.metricRow}>
@@ -707,6 +753,41 @@ const styles = StyleSheet.create({
   hotspotMarker: { width: 8, height: 8, borderRadius: 4 },
   hotspotLocation: { flex: 1, fontSize: 12, color: "#F2F2F7", fontWeight: "800" },
   hotspotMeta: { fontSize: 11, color: "#AEAEB2" },
+  evaluationPanel: {
+    marginTop: 12,
+    paddingTop: 10,
+    borderTopWidth: 1,
+    borderTopColor: "#2C2C2E",
+  },
+  evaluationHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 8 },
+  evaluationTitle: { fontSize: 12, color: "#AEAEB2", fontWeight: "800" },
+  evaluationDataset: { fontSize: 11, color: "#64D2FF", fontWeight: "800" },
+  evaluationCompareRow: { flexDirection: "row", gap: 8 },
+  evaluationMetric: {
+    flex: 1,
+    minHeight: 58,
+    backgroundColor: "#242426",
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#2C2C2E",
+    padding: 9,
+    justifyContent: "center",
+  },
+  evaluationMetricHighlight: { backgroundColor: "#1D2B36", borderColor: "#28546B" },
+  evaluationMetricLabel: { fontSize: 12, color: "#D1D1D6", fontWeight: "800", marginBottom: 6 },
+  evaluationScoreRow: { flexDirection: "row", flexWrap: "wrap", gap: 6 },
+  evaluationScore: { fontSize: 11, color: "#AEAEB2", fontWeight: "800" },
+  evaluationScoreHighlight: { color: "#64D2FF" },
+  evaluationNote: { fontSize: 11, color: "#C7C7CC", lineHeight: 16, marginTop: 8 },
+  clusterRow: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 8 },
+  clusterText: {
+    fontSize: 11,
+    color: "#D1D1D6",
+    backgroundColor: "#242426",
+    borderRadius: 8,
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+  },
   metricRow: { flexDirection: "row", marginTop: 16, borderTopWidth: 1, borderTopColor: "#2C2C2E", paddingTop: 12 },
   metricItem: { flex: 1 },
   metricValue: { fontSize: 21, fontWeight: "800", textAlign: "center" },
