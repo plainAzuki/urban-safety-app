@@ -11,9 +11,40 @@ import {
   StatusBar,
   Alert,
   StyleSheet,
+  NativeModules,
 } from "react-native";
 
-const BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL || "http://10.14.3.203:8000";
+const DEFAULT_BACKEND_PORT = "8000";
+const LOCAL_BACKEND_HOST = "localhost";
+
+function trimTrailingSlash(value) {
+  return value.replace(/\/+$/, "");
+}
+
+function getDevServerHost() {
+  if (typeof window !== "undefined" && window.location?.hostname) {
+    const host = window.location.hostname;
+    if (host !== "localhost" && host !== "127.0.0.1") return host;
+  }
+
+  const scriptURL = NativeModules?.SourceCode?.scriptURL;
+  const host = scriptURL?.match(/^https?:\/\/([^/:]+)/)?.[1];
+  if (host && host !== "localhost" && host !== "127.0.0.1") return host;
+
+  return null;
+}
+
+function buildBackendUrl() {
+  if (process.env.EXPO_PUBLIC_BACKEND_URL) {
+    return trimTrailingSlash(process.env.EXPO_PUBLIC_BACKEND_URL);
+  }
+
+  const devServerHost = getDevServerHost();
+  const backendHost = devServerHost || LOCAL_BACKEND_HOST;
+  return `http://${backendHost}:${DEFAULT_BACKEND_PORT}`;
+}
+
+const BACKEND_URL = buildBackendUrl();
 
 const CATEGORY_CONFIG = {
   all: { label: "全て", shortLabel: "全て", color: "#D8DEE9" },
@@ -385,6 +416,19 @@ function ActionPlan({ actions }) {
   );
 }
 
+function ConnectionErrorPanel({ message, onRetry }) {
+  return (
+    <View style={styles.connectionPanel}>
+      <Text style={styles.connectionTitle}>バックエンドに接続できません</Text>
+      <Text style={styles.connectionText}>接続先: {BACKEND_URL}</Text>
+      <Text style={styles.connectionText}>{message}</Text>
+      <TouchableOpacity style={styles.retryBtn} onPress={onRetry}>
+        <Text style={styles.retryBtnText}>再試行</Text>
+      </TouchableOpacity>
+    </View>
+  );
+}
+
 function RiskCard({ risk, onPress }) {
   const cat = CATEGORY_CONFIG[risk.category] || CATEGORY_CONFIG.unknown;
   const level = risk.risk_level || getRiskLevel(risk.risk_score);
@@ -582,6 +626,7 @@ export default function App() {
   const [activeCategory, setActiveCategory] = useState("all");
   const [timeWindow, setTimeWindow] = useState(24);
   const [syncingOfficial, setSyncingOfficial] = useState(false);
+  const [connectionError, setConnectionError] = useState(null);
 
   const fetchDashboard = useCallback(async (isRefresh = false) => {
     if (!isRefresh) setLoading(true);
@@ -590,11 +635,9 @@ export default function App() {
       if (!resp.ok) throw new Error(`Server error: ${resp.status}`);
       const data = await resp.json();
       setDashboard(data);
+      setConnectionError(null);
     } catch (e) {
-      Alert.alert(
-        "接続エラー",
-        `バックエンドに接続できません。\n\nBACKEND_URL を確認してください:\n${BACKEND_URL}\n\n詳細: ${e.message}`
-      );
+      setConnectionError(e.message);
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -647,63 +690,6 @@ export default function App() {
         <Text style={styles.headerSubtitle}>愛知県 都市安全モニター</Text>
       </View>
 
-      <View style={styles.summaryPanel}>
-        <View style={styles.summaryTop}>
-          <View>
-            <Text style={styles.summaryLabel}>現在の重点リスク</Text>
-            <Text style={[styles.summaryTitle, { color: topLevel.color }]}>
-              {topRisk ? `${topLevel.title}・${CATEGORY_CONFIG[topRisk.category]?.shortLabel || "不明"}` : "通常監視"}
-            </Text>
-          </View>
-          <Text style={styles.summaryWindow}>過去{timeWindow}時間</Text>
-        </View>
-        <Text style={styles.summaryBasis}>{dashboard?.basis || "SNS模擬投稿と公式情報を統合した参考評価"}</Text>
-        <DataSummary summary={dataSummary} />
-        <LiveOfficialNote observation={dataSummary?.latest_live_official} summary={dataSummary?.live_official_summary} />
-        <SystemStatus aiConfig={aiConfig} />
-        <TimelinePanel timeline={riskTimeline} summary={timelineSummary} />
-        <EvaluationPanel summary={evaluationSummary} />
-        <CategoryBreakdown counts={categoryCounts} />
-        <HotspotPanel hotspots={hotspots} />
-        <View style={styles.metricRow}>
-          <SummaryMetric label="高" value={levelCounts.high} color={RISK_LEVEL_CONFIG.high.color} />
-          <SummaryMetric label="中" value={levelCounts.medium} color={RISK_LEVEL_CONFIG.medium.color} />
-          <SummaryMetric label="低" value={levelCounts.low} color={RISK_LEVEL_CONFIG.low.color} />
-          <SummaryMetric label="合計" value={dashboard?.risk_count || 0} color="#E5E5EA" />
-        </View>
-      </View>
-
-      <View style={styles.controlSection}>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterRow}>
-          {FILTERS.map((key) => {
-            const config = CATEGORY_CONFIG[key];
-            return (
-              <FilterChip
-                key={key}
-                label={config.shortLabel}
-                active={activeCategory === key}
-                color={config.color}
-                onPress={() => setActiveCategory(key)}
-              />
-            );
-          })}
-        </ScrollView>
-        <View style={styles.windowRow}>
-          {TIME_WINDOWS.map((hours) => (
-            <FilterChip
-              key={hours}
-              label={`${hours}h`}
-              active={timeWindow === hours}
-              color="#4EA8DE"
-              onPress={() => setTimeWindow(hours)}
-            />
-          ))}
-          <TouchableOpacity style={styles.syncButton} onPress={syncOfficial} activeOpacity={0.8} disabled={syncingOfficial}>
-            <Text style={styles.syncButtonText}>{syncingOfficial ? "更新中" : "公式更新"}</Text>
-          </TouchableOpacity>
-        </View>
-      </View>
-
       {loading ? (
         <View style={styles.centerContainer}>
           <ActivityIndicator size="large" color="#4EA8DE" />
@@ -715,6 +701,73 @@ export default function App() {
           keyExtractor={(item) => item.event_id || item.id}
           renderItem={({ item }) => <RiskCard risk={item} onPress={openRisk} />}
           contentContainerStyle={styles.listContent}
+          ListHeaderComponent={
+            <>
+              {connectionError && (
+                <ConnectionErrorPanel message={connectionError} onRetry={() => fetchDashboard(true)} />
+              )}
+              {dashboard && (
+                <>
+                  <View style={styles.summaryPanel}>
+                    <View style={styles.summaryTop}>
+                      <View style={styles.summaryTitleBlock}>
+                        <Text style={styles.summaryLabel}>現在の重点リスク</Text>
+                        <Text style={[styles.summaryTitle, { color: topLevel.color }]}>
+                          {topRisk ? `${topLevel.title}・${CATEGORY_CONFIG[topRisk.category]?.shortLabel || "不明"}` : "通常監視"}
+                        </Text>
+                      </View>
+                      <Text style={styles.summaryWindow}>過去{timeWindow}時間</Text>
+                    </View>
+                    <Text style={styles.summaryBasis}>{dashboard?.basis || "SNS模擬投稿と公式情報を統合した参考評価"}</Text>
+                    <DataSummary summary={dataSummary} />
+                    <LiveOfficialNote observation={dataSummary?.latest_live_official} summary={dataSummary?.live_official_summary} />
+                    <SystemStatus aiConfig={aiConfig} />
+                    <TimelinePanel timeline={riskTimeline} summary={timelineSummary} />
+                    <EvaluationPanel summary={evaluationSummary} />
+                    <CategoryBreakdown counts={categoryCounts} />
+                    <HotspotPanel hotspots={hotspots} />
+                    <View style={styles.metricRow}>
+                      <SummaryMetric label="高" value={levelCounts.high} color={RISK_LEVEL_CONFIG.high.color} />
+                      <SummaryMetric label="中" value={levelCounts.medium} color={RISK_LEVEL_CONFIG.medium.color} />
+                      <SummaryMetric label="低" value={levelCounts.low} color={RISK_LEVEL_CONFIG.low.color} />
+                      <SummaryMetric label="合計" value={dashboard?.risk_count || 0} color="#E5E5EA" />
+                    </View>
+                  </View>
+
+                  <View style={styles.controlSection}>
+                    <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterRow}>
+                      {FILTERS.map((key) => {
+                        const config = CATEGORY_CONFIG[key];
+                        return (
+                          <FilterChip
+                            key={key}
+                            label={config.shortLabel}
+                            active={activeCategory === key}
+                            color={config.color}
+                            onPress={() => setActiveCategory(key)}
+                          />
+                        );
+                      })}
+                    </ScrollView>
+                    <View style={styles.windowRow}>
+                      {TIME_WINDOWS.map((hours) => (
+                        <FilterChip
+                          key={hours}
+                          label={`${hours}h`}
+                          active={timeWindow === hours}
+                          color="#4EA8DE"
+                          onPress={() => setTimeWindow(hours)}
+                        />
+                      ))}
+                      <TouchableOpacity style={styles.syncButton} onPress={syncOfficial} activeOpacity={0.8} disabled={syncingOfficial}>
+                        <Text style={styles.syncButtonText}>{syncingOfficial ? "更新中" : "公式更新"}</Text>
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                </>
+              )}
+            </>
+          }
           refreshControl={
             <RefreshControl
               refreshing={refreshing}
@@ -725,7 +778,7 @@ export default function App() {
               tintColor="#4EA8DE"
             />
           }
-          ListEmptyComponent={<Text style={styles.emptyText}>対象期間のリスク情報はありません</Text>}
+          ListEmptyComponent={connectionError ? null : <Text style={styles.emptyText}>対象期間のリスク情報はありません</Text>}
         />
       )}
 
@@ -751,7 +804,7 @@ const styles = StyleSheet.create({
   headerTitle: { fontSize: 25, fontWeight: "800", color: "#F2F2F7", letterSpacing: 0 },
   headerSubtitle: { fontSize: 13, color: "#AEAEB2", marginTop: 3 },
   summaryPanel: {
-    margin: 12,
+    marginBottom: 12,
     padding: 16,
     backgroundColor: "#1C1C1E",
     borderRadius: 8,
@@ -759,9 +812,10 @@ const styles = StyleSheet.create({
     borderColor: "#2C2C2E",
   },
   summaryTop: { flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start", gap: 12 },
+  summaryTitleBlock: { flex: 1 },
   summaryLabel: { fontSize: 12, color: "#AEAEB2", marginBottom: 4 },
   summaryTitle: { fontSize: 24, fontWeight: "800", letterSpacing: 0 },
-  summaryWindow: { fontSize: 12, color: "#AEAEB2", paddingTop: 3 },
+  summaryWindow: { fontSize: 12, color: "#AEAEB2", paddingTop: 3, flexShrink: 0 },
   summaryBasis: { fontSize: 12, color: "#C7C7CC", lineHeight: 17, marginTop: 10 },
   dataSummaryRow: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 10 },
   dataSummaryText: {
@@ -935,7 +989,7 @@ const styles = StyleSheet.create({
   metricItem: { flex: 1 },
   metricValue: { fontSize: 21, fontWeight: "800", textAlign: "center" },
   metricLabel: { fontSize: 12, color: "#AEAEB2", textAlign: "center", marginTop: 2 },
-  controlSection: { paddingHorizontal: 12, marginBottom: 4, gap: 8 },
+  controlSection: { marginBottom: 4, gap: 8 },
   filterRow: { gap: 8, paddingRight: 12 },
   windowRow: { flexDirection: "row", gap: 8 },
   syncButton: {
@@ -961,10 +1015,21 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   filterText: { fontSize: 13, color: "#AEAEB2", fontWeight: "700" },
-  listContent: { padding: 12, paddingTop: 8, gap: 10 },
+  listContent: { padding: 12, paddingTop: 8, paddingBottom: 24, gap: 10 },
   centerContainer: { flex: 1, justifyContent: "center", alignItems: "center", gap: 12 },
   loadingText: { color: "#AEAEB2", fontSize: 14 },
   emptyText: { color: "#AEAEB2", textAlign: "center", marginTop: 40 },
+  connectionPanel: {
+    backgroundColor: "#3A1F22",
+    borderRadius: 8,
+    padding: 14,
+    borderWidth: 1,
+    borderColor: "#703236",
+    gap: 8,
+    marginBottom: 12,
+  },
+  connectionTitle: { fontSize: 15, color: "#F25F5C", fontWeight: "800" },
+  connectionText: { fontSize: 12, color: "#E5E5EA", lineHeight: 18 },
 
   card: {
     backgroundColor: "#1C1C1E",

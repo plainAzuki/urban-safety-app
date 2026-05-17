@@ -9,11 +9,21 @@ npm install
 npm start
 ```
 
-デフォルトの `BACKEND_URL` は現在の開発PCのローカルIPを指しています。別の環境では次のように上書きできます。
+`npm start` は LAN モードで Expo を起動します。アプリは Expo/Metro の接続先ホストからバックエンドURLを自動推定し、通常は同じ開発PCの `http://<PCのローカルIP>:8000` を見に行きます。
+
+別の環境では次のように明示的に上書きできます。
 
 ```bash
 EXPO_PUBLIC_BACKEND_URL=http://<PCのローカルIP>:8000 npm start
 ```
+
+同じWi-Fi上の実機から接続できない場合は、まず開発PC上でバックエンドを次の形式で起動しているか確認します。
+
+```bash
+uvicorn main:app --host 0.0.0.0 --port 8000
+```
+
+Mac のファイアウォールが無効で、ブラウザから `http://<PCのローカルIP>:8000/health` が開けるのに実機だけ接続できない場合、Wi-Fi側の端末間通信ブロックや別ネットワーク接続の可能性があります。
 
 ## 表示内容
 
