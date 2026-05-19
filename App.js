@@ -15,7 +15,7 @@ import {
 } from "react-native";
 
 const DEFAULT_BACKEND_PORT = "8000";
-const LOCAL_BACKEND_HOST = "localhost";
+const LOCAL_BACKEND_HOST = "10.14.5.217";
 
 function trimTrailingSlash(value) {
   return value.replace(/\/+$/, "");
@@ -149,19 +149,74 @@ function SystemStatus({ aiConfig }) {
   );
 }
 
-function LiveOfficialNote({ observation, summary }) {
+function LiveOfficialNote({ observation, summary, onPress }) {
   if (!observation && !summary) return null;
   const status = summary?.status || observation?.status || "normal";
   const severity = summary?.max_severity !== undefined ? Math.round(summary.max_severity * 100) : null;
   return (
-    <View style={styles.liveOfficialNote}>
-      <Text style={styles.liveOfficialTitle}>公式状態: {status}{severity !== null ? ` / ${severity}` : ""}</Text>
+    <TouchableOpacity style={styles.liveOfficialNote} onPress={onPress} activeOpacity={0.82}>
+      <View style={styles.liveOfficialHeader}>
+        <Text style={styles.liveOfficialTitle}>公式状態: {status}{severity !== null ? ` / ${severity}` : ""}</Text>
+        <Text style={styles.liveOfficialAction}>詳細</Text>
+      </View>
       {observation && (
         <Text style={styles.liveOfficialText} numberOfLines={2}>
           {observation.label} / {observation.observed_at}
         </Text>
       )}
-    </View>
+    </TouchableOpacity>
+  );
+}
+
+function OfficialInfoModal({ visible, onClose, observations, loading, error, onRetry }) {
+  return (
+    <Modal visible={visible} animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
+      <StatusBar barStyle="light-content" backgroundColor="#111111" />
+      <View style={styles.modalContainer}>
+        <View style={styles.modalHeader}>
+          <View>
+            <Text style={styles.modalTitle}>公式情報の取得内容</Text>
+            <Text style={styles.modalSubtitle}>公式サイト・APIから取得した最新信号</Text>
+          </View>
+          <TouchableOpacity onPress={onClose} style={styles.closeBtn}>
+            <Text style={styles.closeBtnText}>×</Text>
+          </TouchableOpacity>
+        </View>
+        <ScrollView style={styles.modalBody} showsVerticalScrollIndicator={false}>
+          {loading && (
+            <View style={styles.loadingContainer}>
+              <ActivityIndicator size="large" color="#4EA8DE" />
+              <Text style={styles.loadingText}>公式情報を読み込み中...</Text>
+            </View>
+          )}
+          {error && (
+            <View style={styles.errorBox}>
+              <Text style={styles.errorTitle}>公式情報を読み込めません</Text>
+              <Text style={styles.errorText}>{error}</Text>
+              <TouchableOpacity style={styles.retryBtn} onPress={onRetry}>
+                <Text style={styles.retryBtnText}>再試行</Text>
+              </TouchableOpacity>
+            </View>
+          )}
+          {!loading && !error && observations.length === 0 && (
+            <View style={styles.analysisSection}>
+              <Text style={styles.noSignalText}>取得済みの公式情報はありません。</Text>
+            </View>
+          )}
+          {!loading && !error && observations.map((item, index) => (
+            <View style={styles.officialInfoItem} key={getSignalKey(item, index, "official")}>
+              <View style={styles.officialInfoHeader}>
+                <Text style={styles.officialInfoSource}>{item.source}</Text>
+                <Text style={styles.officialInfoStatus}>{item.status} / {Math.round((item.severity || 0) * 100)}</Text>
+              </View>
+              <Text style={styles.officialInfoLabel}>{item.label}</Text>
+              <Text style={styles.officialInfoMeta}>{item.area} / {item.observed_at}</Text>
+              {!!item.detail && <Text style={styles.officialInfoDetail}>{item.detail}</Text>}
+            </View>
+          ))}
+        </ScrollView>
+      </View>
+    </Modal>
   );
 }
 
@@ -242,9 +297,13 @@ function formatSignedPercent(value = 0) {
 
 // 卒研の評価軸を画面上でも確認できるよう、比較条件・失敗例・紐づけルールをまとめて表示する。
 function EvaluationPanel({ summary }) {
-  if (!summary?.results?.length) return null;
-  const multiSource = summary.results.find((item) => item.mode === "multi_source") || summary.best_mode;
-  const snsOnly = summary.results.find((item) => item.mode === "sns_only");
+  const [selectedMode, setSelectedMode] = useState(null);
+  const results = summary?.results || [];
+  if (!results.length) return null;
+  const multiSource = results.find((item) => item.mode === "multi_source") || summary.best_mode;
+  const snsOnly = results.find((item) => item.mode === "sns_only");
+  const activeMode = selectedMode || multiSource?.mode || snsOnly?.mode || results[0]?.mode;
+  const selectedResult = results.find((item) => item.mode === activeMode) || multiSource || snsOnly;
   const clustering = summary.clustering;
   const comparison = summary.comparison_summary;
   const failures = summary.failure_examples;
@@ -256,11 +315,25 @@ function EvaluationPanel({ summary }) {
         <Text style={styles.evaluationDataset}>{summary.dataset_size}件</Text>
       </View>
       <View style={styles.evaluationCompareRow}>
-        {snsOnly && <EvaluationMetric result={snsOnly} compactLabel="SNSのみ" />}
-        {multiSource && <EvaluationMetric result={multiSource} compactLabel="多ソース" highlight />}
+        {snsOnly && (
+          <EvaluationMetric
+            result={snsOnly}
+            compactLabel="SNSのみ"
+            active={activeMode === snsOnly.mode}
+            onPress={() => setSelectedMode(snsOnly.mode)}
+          />
+        )}
+        {multiSource && (
+          <EvaluationMetric
+            result={multiSource}
+            compactLabel="多ソース"
+            active={activeMode === multiSource.mode}
+            onPress={() => setSelectedMode(multiSource.mode)}
+          />
+        )}
       </View>
       <Text style={styles.evaluationNote}>
-        SNS単独と公式情報統合ありを比較し、Precision / Recall / F1 を算出しています。
+        {selectedResult?.label || "選択中の条件"} の Precision / Recall / F1 を表示しています。
       </Text>
       {comparison && (
         <View style={styles.evaluationDeltaRow}>
@@ -270,9 +343,7 @@ function EvaluationPanel({ summary }) {
         </View>
       )}
       <View style={styles.evaluationTable}>
-        {summary.results.map((result) => (
-          <EvaluationResultRow key={result.mode} result={result} highlight={result.mode === "multi_source"} />
-        ))}
+        {selectedResult && <EvaluationResultRow result={selectedResult} highlight={selectedResult.mode === "multi_source"} />}
       </View>
       {clustering && (
         <View style={styles.clusterRow}>
@@ -286,18 +357,22 @@ function EvaluationPanel({ summary }) {
   );
 }
 
-function EvaluationMetric({ result, compactLabel, highlight }) {
+function EvaluationMetric({ result, compactLabel, active, onPress }) {
   return (
-    <View style={[styles.evaluationMetric, highlight && styles.evaluationMetricHighlight]}>
+    <TouchableOpacity
+      style={[styles.evaluationMetric, active && styles.evaluationMetricActive]}
+      onPress={onPress}
+      activeOpacity={0.82}
+    >
       <Text style={styles.evaluationMetricLabel}>{compactLabel}</Text>
       <View style={styles.evaluationScoreRow}>
         <Text style={styles.evaluationScore}>P {formatPercent(result.precision)}</Text>
         <Text style={styles.evaluationScore}>R {formatPercent(result.recall)}</Text>
-        <Text style={[styles.evaluationScore, highlight && styles.evaluationScoreHighlight]}>
+        <Text style={[styles.evaluationScore, active && styles.evaluationScoreActive]}>
           F1 {formatPercent(result.f1)}
         </Text>
       </View>
-    </View>
+    </TouchableOpacity>
   );
 }
 
@@ -363,6 +438,16 @@ function RuleSummary({ rule, officialMatchCount }) {
       <Text style={styles.ruleDescription} numberOfLines={2}>{rule.type_rule}</Text>
     </View>
   );
+}
+
+function getSignalKey(signal, index, prefix = "signal") {
+  return [
+    prefix,
+    signal.source || "source",
+    signal.label || "label",
+    signal.observed_at || signal.detail || index,
+    index,
+  ].join("-");
 }
 
 function SignalChip({ signal }) {
@@ -459,7 +544,9 @@ function RiskCard({ risk, onPress }) {
 
       <View style={styles.signalRow}>
         {signals.length > 0 ? (
-          signals.slice(0, 2).map((signal) => <SignalChip key={`${risk.id}-${signal.label}`} signal={signal} />)
+          signals.slice(0, 2).map((signal, index) => (
+            <SignalChip key={getSignalKey(signal, index, risk.id || risk.event_id)} signal={signal} />
+          ))
         ) : (
           <Text style={styles.noSignalText}>公式信号: 通常監視</Text>
         )}
@@ -561,9 +648,11 @@ function AnalysisModal({ event, visible, onClose }) {
             <Text style={styles.sectionTitle}>公式情報の信号</Text>
             <View style={styles.signalRow}>
               {signals.length > 0 ? (
-                signals.map((signal) => <SignalChip key={signal.label} signal={signal} />)
+                signals.map((signal, index) => (
+                  <SignalChip key={getSignalKey(signal, index, event.id || event.event_id)} signal={signal} />
+                ))
               ) : (
-                <Text style={styles.noSignalText}>現在の模擬データでは強い公式信号はありません。</Text>
+                <Text style={styles.noSignalText}>現在取得済みの公式情報では、紐づく信号はありません。</Text>
               )}
             </View>
           </View>
@@ -627,6 +716,10 @@ export default function App() {
   const [timeWindow, setTimeWindow] = useState(24);
   const [syncingOfficial, setSyncingOfficial] = useState(false);
   const [connectionError, setConnectionError] = useState(null);
+  const [officialModalVisible, setOfficialModalVisible] = useState(false);
+  const [officialObservations, setOfficialObservations] = useState([]);
+  const [officialLoading, setOfficialLoading] = useState(false);
+  const [officialError, setOfficialError] = useState(null);
 
   const fetchDashboard = useCallback(async (isRefresh = false) => {
     if (!isRefresh) setLoading(true);
@@ -648,14 +741,37 @@ export default function App() {
     fetchDashboard();
   }, [fetchDashboard]);
 
+  const fetchOfficialDetails = useCallback(async () => {
+    setOfficialLoading(true);
+    setOfficialError(null);
+    try {
+      const resp = await fetch(`${BACKEND_URL}/official/live?limit=20`);
+      if (!resp.ok) throw new Error(`Server error: ${resp.status}`);
+      const data = await resp.json();
+      setOfficialObservations(data.observations || []);
+    } catch (e) {
+      setOfficialError(e.message);
+    } finally {
+      setOfficialLoading(false);
+    }
+  }, []);
+
+  const openOfficialDetails = () => {
+    setOfficialModalVisible(true);
+    fetchOfficialDetails();
+  };
+
   const syncOfficial = async () => {
     setSyncingOfficial(true);
     try {
-      const resp = await fetch(`${BACKEND_URL}/official/live/sync`, { method: "POST" });
+      const resp = await fetch(`${BACKEND_URL}/official/sync?hours=${encodeURIComponent(String(timeWindow))}`, { method: "POST" });
       if (!resp.ok) throw new Error(`Server error: ${resp.status}`);
       const result = await resp.json();
       await fetchDashboard(true);
-      Alert.alert("公式情報を更新しました", `取得 ${result.fetched}件 / 保存 ${result.saved}件`);
+      Alert.alert(
+        "公式情報を更新しました",
+        `取得 ${result.fetched}件 / 公式保存 ${result.saved_area_signals}件 / 紐づけ ${result.saved_event_signals}件`
+      );
     } catch (e) {
       Alert.alert("公式情報の更新に失敗しました", e.message);
       setRefreshing(false);
@@ -686,7 +802,7 @@ export default function App() {
       <StatusBar barStyle="light-content" backgroundColor="#111111" />
 
       <View style={styles.header}>
-        <Text style={styles.headerTitle}>Urban Safety</Text>
+        <Text style={styles.headerTitle}>都市安全情報</Text>
         <Text style={styles.headerSubtitle}>愛知県 都市安全モニター</Text>
       </View>
 
@@ -720,7 +836,11 @@ export default function App() {
                     </View>
                     <Text style={styles.summaryBasis}>{dashboard?.basis || "SNS模擬投稿と公式情報を統合した参考評価"}</Text>
                     <DataSummary summary={dataSummary} />
-                    <LiveOfficialNote observation={dataSummary?.latest_live_official} summary={dataSummary?.live_official_summary} />
+                    <LiveOfficialNote
+                      observation={dataSummary?.latest_live_official}
+                      summary={dataSummary?.live_official_summary}
+                      onPress={openOfficialDetails}
+                    />
                     <SystemStatus aiConfig={aiConfig} />
                     <TimelinePanel timeline={riskTimeline} summary={timelineSummary} />
                     <EvaluationPanel summary={evaluationSummary} />
@@ -787,6 +907,14 @@ export default function App() {
         visible={modalVisible}
         onClose={() => setModalVisible(false)}
       />
+      <OfficialInfoModal
+        visible={officialModalVisible}
+        onClose={() => setOfficialModalVisible(false)}
+        observations={officialObservations}
+        loading={officialLoading}
+        error={officialError}
+        onRetry={fetchOfficialDetails}
+      />
     </View>
   );
 }
@@ -843,8 +971,25 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "#28546B",
   },
-  liveOfficialTitle: { fontSize: 12, color: "#64D2FF", fontWeight: "800", marginBottom: 3 },
+  liveOfficialHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 3 },
+  liveOfficialTitle: { flex: 1, fontSize: 12, color: "#64D2FF", fontWeight: "800" },
+  liveOfficialAction: { fontSize: 11, color: "#64D2FF", fontWeight: "800" },
   liveOfficialText: { fontSize: 12, color: "#D1D1D6", lineHeight: 17 },
+  officialInfoItem: {
+    backgroundColor: "#1C1C1E",
+    borderRadius: 8,
+    padding: 14,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: "#2C2C2E",
+    gap: 7,
+  },
+  officialInfoHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 10 },
+  officialInfoSource: { flex: 1, fontSize: 13, color: "#64D2FF", fontWeight: "800" },
+  officialInfoStatus: { fontSize: 11, color: "#D1D1D6", fontWeight: "800", backgroundColor: "#242426", paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8 },
+  officialInfoLabel: { fontSize: 15, color: "#F2F2F7", fontWeight: "800", lineHeight: 20 },
+  officialInfoMeta: { fontSize: 12, color: "#AEAEB2", lineHeight: 17 },
+  officialInfoDetail: { fontSize: 12, color: "#D1D1D6", lineHeight: 18 },
   timelinePanel: {
     marginTop: 12,
     paddingTop: 10,
@@ -916,11 +1061,11 @@ const styles = StyleSheet.create({
     padding: 9,
     justifyContent: "center",
   },
-  evaluationMetricHighlight: { backgroundColor: "#1D2B36", borderColor: "#28546B" },
+  evaluationMetricActive: { backgroundColor: "#1D2B36", borderColor: "#64D2FF" },
   evaluationMetricLabel: { fontSize: 12, color: "#D1D1D6", fontWeight: "800", marginBottom: 6 },
   evaluationScoreRow: { flexDirection: "row", flexWrap: "wrap", gap: 6 },
   evaluationScore: { fontSize: 11, color: "#AEAEB2", fontWeight: "800" },
-  evaluationScoreHighlight: { color: "#64D2FF" },
+  evaluationScoreActive: { color: "#64D2FF" },
   evaluationNote: { fontSize: 11, color: "#C7C7CC", lineHeight: 16, marginTop: 8 },
   evaluationDeltaRow: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 8 },
   evaluationDeltaText: {
